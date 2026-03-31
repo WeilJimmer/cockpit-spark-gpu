@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "${0}")"
-DEFAULT_REPO_SLUG="binbinsh/cockpit-gpu"
+DEFAULT_REPO_SLUG="WeilJimmer/cockpit-gpu"
 DEFAULT_REF="main"
 DEFAULT_PLUGIN_NAME="gpus"
 DEFAULT_COCKPIT_REPO_SLUG="cockpit-project/cockpit"

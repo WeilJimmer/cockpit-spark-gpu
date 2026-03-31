@@ -156,6 +156,32 @@ def prune_usage_summary(state, now_ms):
                 del days[key]
 
 
+def get_unified_memory():
+    """
+    針對 ATS/HMM 統一記憶體架構（如 GB10 Grace Blackwell）
+    從 /proc/meminfo 讀取系統記憶體作為 GPU 統一記憶體
+    回傳單位：MiB
+    """
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            content = f.read()
+
+        values = {}
+        for line in content.splitlines():
+            for key in ('MemTotal', 'MemAvailable'):
+                if line.startswith(f'{key}:'):
+                    values[key] = int(line.split()[1])  # kB
+
+        if 'MemTotal' in values and 'MemAvailable' in values:
+            total = values['MemTotal'] // 1024
+            free  = values['MemAvailable'] // 1024
+            used  = total - free
+            return {'total': total, 'used': used, 'free': free}
+    except Exception:
+        pass
+    return None
+
+
 def collect_gpu_samples():
     command = [
         'nvidia-smi',
@@ -181,43 +207,71 @@ def collect_gpu_samples():
     if not output:
         return []
 
+    # 統一記憶體資料，僅在需要時讀取一次（所有 GPU 共用系統記憶體）
+    _unified_memory_cache = None
+
+    def get_unified_memory_cached():
+        nonlocal _unified_memory_cache
+        if _unified_memory_cache is None:
+            _unified_memory_cache = get_unified_memory()
+        return _unified_memory_cache
+
     samples = []
     for row in csv.reader(output.splitlines()):
         if len(row) < 4:
             continue
 
-        index = f"{row[0]}".strip()
-        uuid = f"{row[1]}".strip() if len(row) > 1 else ''
+        index  = f"{row[0]}".strip()
+        uuid   = f"{row[1]}".strip() if len(row) > 1 else ''
         gpu_id = uuid or index
         if not gpu_id:
             continue
 
-        name = f"{row[2]}".strip() if len(row) > 2 else ''
+        name            = f"{row[2]}".strip() if len(row) > 2 else ''
         utilization_gpu = parse_number(row[3]) if len(row) > 3 else None
-        utilization_memory = parse_number(row[4]) if len(row) > 4 else None
-        memory_total = parse_number(row[5]) if len(row) > 5 else None
-        memory_used = parse_number(row[6]) if len(row) > 6 else None
-        memory_utilization = None
 
-        if utilization_memory is None:
-            if (
-                memory_total is not None
-                and memory_total > 0
-                and memory_used is not None
-            ):
+        raw_util_mem = row[4].strip() if len(row) > 4 else ''
+        raw_mem_total = row[5].strip() if len(row) > 5 else ''
+        raw_mem_used  = row[6].strip() if len(row) > 6 else ''
+
+        utilization_memory = parse_number(raw_util_mem)
+        memory_total       = parse_number(raw_mem_total)
+        memory_used        = parse_number(raw_mem_used)
+
+        # ── 統一記憶體 fallback（N/A 代表 ATS/HMM 架構） ──
+        is_unified_memory = (
+            raw_mem_total in ('[N/A]', 'N/A', '') or
+            memory_total is None
+        )
+
+        if is_unified_memory:
+            uni = get_unified_memory_cached()
+            if uni:
+                memory_total = uni['total']
+                memory_used  = uni['used']
                 memory_utilization = (memory_used / memory_total) * 100
+
+        # ── 計算記憶體使用率 ──
+        if utilization_memory is None:
+            if memory_total and memory_total > 0 and memory_used is not None:
+                memory_utilization = (memory_used / memory_total) * 100
+            else:
+                memory_utilization = None
         else:
             memory_utilization = utilization_memory
 
         temperature = parse_number(row[7]) if len(row) > 7 else None
 
         samples.append({
-            'id': gpu_id,
-            'index': index,
-            'name': name,
-            'utilizationGpu': utilization_gpu,
+            'id':                gpu_id,
+            'index':             index,
+            'name':              name,
+            'utilizationGpu':    utilization_gpu,
             'utilizationMemory': memory_utilization,
-            'temperature': temperature,
+            'memoryTotal':       memory_total,   # MiB
+            'memoryUsed':        memory_used,    # MiB
+            'isUnifiedMemory':   is_unified_memory,
+            'temperature':       temperature,
         })
 
     return samples
@@ -307,6 +361,7 @@ def run_loop(interval_seconds, once):
         start_ms = int(time.time() * 1000)
         samples = collect_gpu_samples()
         if samples:
+            print(samples)
             state = update_usage_summary(state, samples, start_ms, interval_ms)
         state['updatedAt'] = start_ms
         prune_usage_summary(state, start_ms)

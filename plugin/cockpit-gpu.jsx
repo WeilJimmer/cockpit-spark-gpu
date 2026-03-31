@@ -2038,6 +2038,35 @@ async function queryGpuBase() {
     if (lines.length === 0 || isNoDeviceOutput(lines[0]))
         return [];
 
+    // For unified-memory devices (e.g. Jetson) where nvidia-smi reports N/A
+    // for memory fields, read system memory from /proc/meminfo as fallback.
+    let unifiedMemTotal = null;
+    let unifiedMemUsed = null;
+    let unifiedMemFree = null;
+    const needsMemFallback = lines.some(line => {
+        const values = parseCsvLine(line);
+        const raw = {};
+        for (let i = 0; i < GPU_QUERY_FIELDS.length && i < values.length; i++)
+            raw[GPU_QUERY_FIELDS[i].key] = values[i];
+        return toNumber(raw.memoryTotal) === null;
+    });
+
+    if (needsMemFallback) {
+        try {
+            const meminfo = await cockpit.file('/proc/meminfo').read();
+            const getKb = tag => {
+                const m = meminfo.match(new RegExp(`^${tag}:\\s+(\\d+)`, 'm'));
+                return m ? Number(m[1]) * 1024 : null;
+            };
+            unifiedMemTotal = getKb('MemTotal');
+            unifiedMemFree = getKb('MemAvailable') ?? getKb('MemFree');
+            if (unifiedMemTotal !== null && unifiedMemFree !== null)
+                unifiedMemUsed = unifiedMemTotal - unifiedMemFree;
+        } catch (_e) {
+            // /proc/meminfo unavailable – leave nulls
+        }
+    }
+
     return lines.map(line => {
         const values = parseCsvLine(line);
         const raw = {};
@@ -2048,14 +2077,24 @@ async function queryGpuBase() {
         const uuid = `${raw.uuid || ''}`.trim();
         const id = deriveGpuId(index, uuid);
 
-        const memTotal = toNumber(raw.memoryTotal);
-        const memUsed = toNumber(raw.memoryUsed);
-        const memFree = toNumber(raw.memoryFree);
+        let memTotal = toNumber(raw.memoryTotal);
+        let memUsed = toNumber(raw.memoryUsed);
+        let memFree = toNumber(raw.memoryFree);
+
+        // Unified-memory fallback: use system memory when GPU reports N/A
+        if (memTotal === null && unifiedMemTotal !== null) {
+            memTotal = unifiedMemTotal / (1024 * 1024); // bytes → MiB (nvidia-smi unit)
+            memUsed = unifiedMemUsed !== null ? unifiedMemUsed / (1024 * 1024) : null;
+            memFree = unifiedMemFree !== null ? unifiedMemFree / (1024 * 1024) : null;
+        }
+
         const utilizationMemory = Number.isFinite(toNumber(raw.utilizationMemory))
             ? toNumber(raw.utilizationMemory)
             : Number.isFinite(memTotal) && memTotal > 0 && Number.isFinite(memUsed)
                 ? (memUsed / memTotal) * 100
                 : null;
+
+        const powerLimit = toNumber(raw.powerLimit);
 
         return {
             id,
@@ -2065,13 +2104,13 @@ async function queryGpuBase() {
             pcibusid: `${raw.pcibusid || ''}`.trim(),
             utilizationGpu: toNumber(raw.utilizationGpu),
             utilizationMemory,
-            memoryTotal: memTotal !== null ? memTotal * 1024 * 1024 : null,
-            memoryUsed: memUsed !== null ? memUsed * 1024 * 1024 : null,
-            memoryFree: memFree !== null ? memFree * 1024 * 1024 : null,
+            memoryTotal: memTotal !== null ? memTotal : null,
+            memoryUsed: memUsed !== null ? memUsed : null,
+            memoryFree: memFree !== null ? memFree : null,
             temperature: toNumber(raw.temperature),
             fanSpeed: toNumber(raw.fanSpeed),
             powerDraw: toNumber(raw.powerDraw),
-            powerLimit: toNumber(raw.powerLimit),
+            powerLimit: powerLimit !== null ? powerLimit : 140, // DGX Sparks default to 140W limit.
         };
     }).filter(entry => entry.id !== '');
 }
@@ -2635,6 +2674,14 @@ function formatBytes(bytes) {
     return cockpit.format_bytes(bytes, { base2: true, precision: 2 });
 }
 
+function insertCommas(str) {
+    // Every 3 digits followed by a dot or comma, and optional leading minus sign.
+    const parts = `${str || ''}`.trim().split(/(?<=\d)(?=(?:\d{3})+(?:[.,]|$))/g);
+    if (parts.length === 1)
+        return str;
+    return parts.join(',');
+}
+
 function safeFormatNumber(value, precision = 1) {
     if (value === null || !Number.isFinite(value))
         return _('N/A');
@@ -3132,7 +3179,7 @@ function GpuCard({ gpu, history, usageSummary = {} }) {
                     <div className="nvidia-gpu-card__stat-block">
                         <div className="nvidia-gpu-card__stat-label">{_('Memory')}</div>
                         <div className="nvidia-gpu-card__stat-value">
-                            {formatBytes(memUsed)} / {formatBytes(memTotal)}
+                            {insertCommas(formatBytes(memUsed))} / {insertCommas(formatBytes(memTotal))} MiB
                         </div>
                         <Progress value={clamp01(memPct || 0, 0)} min={0} max={100} aria-label={_('Memory util')} />
                     </div>
@@ -3557,7 +3604,7 @@ function App() {
                                 <div className="nvidia-gpu-overview__item">
                                     <div>{_('Total Memory Used')}</div>
                                     <strong>
-                                        {formatBytes(totalMemory.used)} / {formatBytes(totalMemory.total)}
+                                        {formatBytes(totalMemory.used / 1024)} / {formatBytes(totalMemory.total / 1024)} GiB
                                     </strong>
                                 </div>
                             </GridItem>
