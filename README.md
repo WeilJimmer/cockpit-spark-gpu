@@ -14,7 +14,7 @@ It provides:
 ## Quick install (from GitHub)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/binbinsh/cockpit-gpu/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/WeilJimmer/cockpit-gpu/main/install.sh | bash
 ```
 
 Default install path:
