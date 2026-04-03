@@ -522,7 +522,7 @@
 }
 
 .nvidia-gpu-chart__gridline {
-  stroke: color-mix(in srgb, var(--pf-t--global--text--color--subtle) 25%, transparent);
+  stroke: color-mix(in srgb, var(--pf-t--global--text--color--subtle) 25%, limegreen 75%);
   stroke-width: 0.3;
   stroke-dasharray: 2.2 2.8;
 }
