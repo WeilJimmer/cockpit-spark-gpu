@@ -2898,6 +2898,7 @@ function HistoryChart({ title, unit, color, data, max, min = 0, chartId = '', cl
                         {gridLines.map(level => (
                             <line key={`grid-${chartIdText}-${level}`} className="nvidia-gpu-chart__gridline" x1="0" x2={width} y1={level} y2={level} />
                         ))}
+                        <line className="nvidia-gpu-chart__maxline" x1="0" x2={width} y1={0} y2={0} />
                         <path
                             className="nvidia-gpu-chart__area"
                             d={lineFill.join(' ')}
